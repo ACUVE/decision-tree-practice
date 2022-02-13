@@ -1,5 +1,6 @@
 #include <cmath>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <optional>
@@ -466,7 +467,7 @@ public:
     {
         if (!decision_tree_v2_validate(from))
         {
-            pxor(xmm0, xmm0);
+            xorpd(xmm0, xmm0);
             ret();
             return;
         }
@@ -518,20 +519,18 @@ public:
             {
                 Xbyak::Label label1;
                 movss(xmm1, dword[rdi + sizeof(float) * n.feature_index]);
-                // nan かチェック
-                ucomiss(xmm1, xmm1);
-                xorpd(xmm0, xmm0);
-                // nan ならジャンプ
-                jp(label1);
-                // nan でないなら、double に変換
-                xorps(xmm0, xmm0);
-                cvtss2sd(xmm0, xmm1);
+                ucomiss(xmm1, xmm1);  // nan かチェック
+                xorpd(xmm0, xmm0);    // xmm0 を 0 に
+                jp(label1);           // nan なら 変換省略
+                xorps(xmm0, xmm0);    // xmm0 を 0 に
+                cvtss2sd(xmm0, xmm1); // double に変換
                 L(label1);
-                ucomisd(xmm0, qword[rip + data.double_num(n.threshold)]);
                 if (n.left < 0 && n.right < 0)
                 {
+                    movsd(xmm1, qword[rip + data.double_num(n.threshold)]);
                     lea(rcx, ptr[rip + data.double_num(from.leaf_value.at(~n.left))]);
                     lea(rdx, ptr[rip + data.double_num(from.leaf_value.at(~n.right))]);
+                    ucomisd(xmm0, xmm1);
                     cmovae(rcx, rdx);
                     movsd(xmm0, qword[rcx]);
                     ret();
@@ -539,6 +538,7 @@ public:
                 else
                 {
                     Xbyak::Label label2;
+                    ucomisd(xmm0, qword[rip + data.double_num(n.threshold)]);
                     jae(label2, T_NEAR);
                     this->node(from, n.left, data);
                     L(label2);
