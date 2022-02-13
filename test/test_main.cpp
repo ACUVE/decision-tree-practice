@@ -30,11 +30,11 @@ decision_tree_data random_decision_tree(Gen &&gen, std::size_t const leaf_size)
     std::shuffle(feature_index.begin(), feature_index.end(), gen);
 
     std::vector<std::uint8_t> flag(leaf_size - 1, 0);
-    for (std::size_t i = 0u; i < leaf_size - 1; ++i)
-    {
-        flag[i] = set_missing_type(flag[i], dist_02(gen));
-        flag[i] = set_decision_type(flag[i], decision_type_flag::decision_type_default_left, dist_bool(gen));
-    }
+    // for (std::size_t i = 0u; i < leaf_size - 1; ++i)
+    // {
+    //     flag[i] = set_missing_type(flag[i], dist_02(gen));
+    //     flag[i] = set_decision_type(flag[i], decision_type_flag::decision_type_default_left, dist_bool(gen));
+    // }
 
     std::vector<double> threshold(leaf_size - 1);
     std::generate(threshold.begin(), threshold.end(), [&]
@@ -90,17 +90,24 @@ void try_one()
             }
         }
     }
+    if (maxlength_decision_tree && maxlength_str && maxlength_index)
     {
         std::cout << "maxlength_index = "sv << maxlength_index.value() << ", func"sv << maxlength_index.value() + 1 << std::endl;
-        auto dlhandel = dlopen("./random_decision.so", RTLD_NOW);
-        auto func = (double (*)(float const *))dlsym(dlhandel, ("func" + std::to_string(*maxlength_index + 1)).c_str());
-        std::cout << (void *)dlhandel << ", " << (void *)func << std::endl;
+        auto dlhandle = dlopen("./random_decision.so", RTLD_NOW);
+        if (!dlhandle)
+        {
+            dlhandle = dlopen("./random_decision.dylib", RTLD_NOW);
+        }
+        auto func = (double (*)(float const *))dlsym(dlhandle, ("func" + std::to_string(*maxlength_index + 1)).c_str());
+        std::cout << (void *)dlhandle << ", " << (void *)func << std::endl;
         std::normal_distribution<double> dist(0.0, 1.0);
         auto max_index = *std::max_element(maxlength_decision_tree->feature_index.begin(), maxlength_decision_tree->feature_index.end());
         std::vector<std::vector<float>> features_list(2000u, std::vector<float>(max_index, float{}));
         auto dt = std::move(maxlength_decision_tree).value();
         auto dt2 = decision_tree_convert(dt).value();
+        std::cout << "decision_tree_v2_convert start" << std::endl;
         auto dt3 = decision_tree_v2_convert(dt2).value();
+        std::cout << "decision_tree_v2_convert end" << std::endl;
         for (auto &features : features_list)
         {
             std::generate(features.begin(), features.end(), [&]
@@ -152,6 +159,12 @@ void try_one()
                                    10000)
                       << std::endl;
         }
+        std::cout << benchmark([&]
+                               {for(auto const &features : features_list){
+                                        decision_tree_v3_run(features.data(), dt3);
+                                    } },
+                               10000)
+                  << std::endl;
 
         for (auto const &features : features_list)
         {

@@ -445,21 +445,22 @@ struct decision_tree_data_v3::internal_data : Xbyak::CodeGenerator
 private:
     struct build_data
     {
-        std::map<double, Xbyak::Label> num_to_label;
+        std::list<std::tuple<double, Xbyak::Label>> num_to_label;
+
+        Xbyak::Label &double_num(double num)
+        {
+            auto it = std::find_if(this->num_to_label.begin(), this->num_to_label.end(), [&](auto &v)
+                                   { return std::get<double>(v) == num; });
+            if (it != this->num_to_label.end())
+            {
+                return std::get<Xbyak::Label>(*it);
+            }
+            this->num_to_label.emplace_back(num, Xbyak::Label{});
+            return std::get<Xbyak::Label>(this->num_to_label.back());
+        }
     };
-    std::unique_ptr<build_data> data;
 
 public:
-    Xbyak::Label &double_num(double num)
-    {
-        auto it = this->data->num_to_label.find(num);
-        if (it != this->data->num_to_label.end())
-        {
-            return it->second;
-        }
-        this->data->num_to_label.emplace(num, Xbyak::Label{});
-    }
-
     internal_data(decision_tree_data_v2 const &from)
         : Xbyak::CodeGenerator(4096, Xbyak::AutoGrow)
     {
@@ -469,17 +470,24 @@ public:
             ret();
             return;
         }
-        this->data = std::unique_ptr<build_data>();
+        build_data data;
         if (from.leaf_value.size() == 1u)
         {
-            movsd(xmm0, qword[rip + this->double_num(from.leaf_value.at(0))]);
+            movsd(xmm0, qword[rip + data.double_num(from.leaf_value.at(0))]);
             ret();
         }
         else
         {
-            this->node(from, 0);
+            if (std::any_of(from.nodes.begin(), from.nodes.end(), [](auto const &node)
+                            { return get_missing_type(node.flag) == missing_type_flag::Zero; }))
+            {
+                movsd(xmm2, qword[rip + data.double_num(-ZERO_THRESHOLD)]);
+                movsd(xmm3, qword[rip + data.double_num(ZERO_THRESHOLD)]);
+            }
+            this->node(from, 0, data);
         }
-        for (auto &[key, value] : this->data->num_to_label)
+        align(8);
+        for (auto &[key, value] : data.num_to_label)
         {
             union
             {
@@ -490,14 +498,13 @@ public:
             L(value);
             dq(tmp.i);
         }
-        this->data.reset();
     }
 
-    void node(decision_tree_data_v2 const &from, int node)
+    void node(decision_tree_data_v2 const &from, int node, build_data &data)
     {
         if (node < 0)
         {
-            movsd(xmm0, qword[rip + this->double_num(from.leaf_value.at(~node))]);
+            movsd(xmm0, qword[rip + data.double_num(from.leaf_value.at(~node))]);
             ret();
             return;
         }
@@ -509,14 +516,34 @@ public:
             case missing_type_flag::None:
             default:
             {
-                Xbyak::Label label;
+                Xbyak::Label label1;
                 movss(xmm1, dword[rdi + sizeof(float) * n.feature_index]);
+                // nan かチェック
                 ucomiss(xmm1, xmm1);
                 xorpd(xmm0, xmm0);
-                jp(label);
+                // nan ならジャンプ
+                jp(label1);
+                // nan でないなら、double に変換
                 xorps(xmm0, xmm0);
                 cvtss2sd(xmm0, xmm1);
-                L(label);
+                L(label1);
+                ucomisd(xmm0, qword[rip + data.double_num(n.threshold)]);
+                if (n.left < 0 && n.right < 0)
+                {
+                    lea(rcx, ptr[rip + data.double_num(from.leaf_value.at(~n.left))]);
+                    lea(rdx, ptr[rip + data.double_num(from.leaf_value.at(~n.right))]);
+                    cmovae(rcx, rdx);
+                    movsd(xmm0, qword[rcx]);
+                    ret();
+                }
+                else
+                {
+                    Xbyak::Label label2;
+                    jae(label2, T_NEAR);
+                    this->node(from, n.left, data);
+                    L(label2);
+                    this->node(from, n.right, data);
+                }
             }
             break;
             case missing_type_flag::Zero:
@@ -538,11 +565,18 @@ decision_tree_v2_convert(decision_tree_data_v2 const &from)
 try
 {
     auto data = std::make_shared<decision_tree_data_v3::internal_data>(from);
+    std::cout << "make_shared" << std::endl;
     data->readyRE();
     return decision_tree_data_v3{std::move(data)};
 }
+catch (std::exception &e)
+{
+    std::cout << "nullopt: " << e.what() << std::endl;
+    return std::nullopt;
+}
 catch (...)
 {
+    std::cout << "nullopt" << std::endl;
     return std::nullopt;
 }
 
